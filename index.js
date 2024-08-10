@@ -3,8 +3,7 @@ import * as http from "http";
 import * as https from "https";
 import * as url from "url";
 
-//const { url } = import("url");
-import { replacePlaceholders } from "./functions.js"; // Importiere die Funktion aus der index.js Datei
+import * as func from "./functions.cjs"; // Importiere die Funktion aus der index.js Datei
 
 // nimm erstes argument als port oder verwende 8180
 const port = process.argv[2] || 8180;
@@ -18,6 +17,25 @@ const proxyServer = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
 
+  console.log(`Pathname: ${pathname}`);
+  // Überprüfe, ob der Pfad das Wort "echo" enthält
+  if (pathname.includes("echo")) {
+    let body = "";
+
+    // Lese den request-body
+    req.on("data", (chunk) => {
+      body += chunk.toString();
+    });
+
+    req.on("end", () => {
+      // Gib den request-body und die request-headers als Text zurück
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end(`Headers: ${JSON.stringify(req.headers)}\n\nBody: ${body}`);
+    });
+
+    return;
+  }
+
   // Extrahiere die Query-Parameter-Namen
   const queryNames = Object.keys(parsedUrl.query);
   console.log(`Query Names: ${queryNames}`);
@@ -29,7 +47,7 @@ const proxyServer = http.createServer((req, res) => {
     queryParams.push({ key, value });
   }
 
-  console.log(`queryParams = ${queryParams}`);
+  console.log(`queryParams = ${JSON.stringify(queryParams)}`);
 
   // Extrahiere die Basis-URL und die Parameter
   const match = pathname.match(/^\/(https|http)\/(.*)$/);
@@ -39,31 +57,58 @@ const proxyServer = http.createServer((req, res) => {
     return;
   }
 
-  const baseUrl = `${match[1]}://${match[2]}`;
-  const params = parsedUrl.query;
+  const baseUrl = func.replaceQueryParamsOnPlaceholder(
+    `${match[1]}://${match[2]}`,
+    queryParams
+  );
 
-  // Erstelle die Ziel-URL basierend auf dem Template und den Parametern
-  let targetUrl = replacePlaceholders(baseUrl, params);
-  console.log(`targetUrl = ${targetUrl}`);
+  console.log(`Base URL: ${baseUrl}`);
+  // Analysiere die Ziel-URL
+  const parsedTargetUrl = url.parse(baseUrl);
+  const protocol = baseUrl.startsWith("https:") ? https : http;
+
+  // replace value host in req.headers with parsedTargetUrl.host
+  req.headers.host = parsedTargetUrl.host;
+
+  // Optionen für die Zielanfrage
+  const options = {
+    hostname: parsedTargetUrl.hostname,
+    port: parsedTargetUrl.port,
+    path: parsedTargetUrl.path,
+    method: req.method,
+    headers: req.headers,
+  };
+
+  console.log(`Options: ${JSON.stringify(options)}`);
 
   /*
-  // write response ok as text and status 200
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("OK");
-  return;
+  res.write(`Request URL: ${req.url}\n\n`);
+  res.write(`Base URL: ${baseUrl}\n\n`);
+  res.write(`Options: ${JSON.stringify(options)}\n\n`);
+
+  return res.end;
   */
 
   // Leite die Anfrage an den Ziel-Server weiter
-
-  const targetReq = https.request(targetUrl, (targetRes) => {
+  const targetReq = protocol.request(options, (targetRes) => {
+    // Leite die Antwort des Ziel-Servers an den ursprünglichen Client weiter
+    //res.writeHead(targetRes.statusCode, targetRes.headers);
     targetRes.pipe(res);
   });
+
+  // Leite den Body der ursprünglichen Anfrage an den Ziel-Server weiter
   req.pipe(targetReq);
+
+  // Fehlerbehandlung
   targetReq.on("error", (err) => {
     console.error(err);
     res.writeHead(500, { "Content-Type": "text/plain" });
     res.end("Error");
   });
+
+  //targetReq.end();
+  /**/
 });
 
 proxyServer.listen(port, () => {
